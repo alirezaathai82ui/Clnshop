@@ -34,8 +34,10 @@ jobs:
         run: |
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
             printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+          elif [ -f android/app/google-services.json ]; then
+            echo "از فایل google-services.json داخل ریپو استفاده می‌شود."
           else
-            echo "::warning::Secret GOOGLE_SERVICES_JSON تنظیم نشده؛ APK با Firebase آزمایشی ساخته می‌شود (نصب می‌شود ولی نوتیفیکیشن کار نمی‌کند)."
+            echo "::warning::google-services.json پیدا نشد؛ APK با Firebase آزمایشی ساخته می‌شود (نصب می‌شود ولی نوتیفیکیشن کار نمی‌کند)."
             cp android/app/google-services.json.example android/app/google-services.json
           fi
 
