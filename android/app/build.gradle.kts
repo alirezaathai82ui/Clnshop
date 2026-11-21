@@ -25,17 +25,16 @@ android {
         buildConfig = true
     }
 
+    val ksPath: String? = System.getenv("KEYSTORE_PATH")
+    val hasReleaseKey = !ksPath.isNullOrBlank() && file(ksPath).exists()
+
     signingConfigs {
-        create("release") {
-            val ksPath = System.getenv("KEYSTORE_PATH")
-            if (!ksPath.isNullOrBlank() && file(ksPath).exists()) {
-                storeFile = file(ksPath)
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = file(ksPath!!)
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
-            } else {
-                // بدون کلید اختصاصی، با کلید دیباگ امضا می‌شود (برای نصب مستقیم کافی است)
-                initWith(getByName("debug"))
             }
         }
     }
@@ -45,7 +44,8 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("release")
+            // بدون کلید اختصاصی (مثلاً ساخت محلی) با کلید دیباگ امضا می‌شود
+            signingConfig = if (hasReleaseKey) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
     }
 

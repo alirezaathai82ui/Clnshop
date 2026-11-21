@@ -8,6 +8,9 @@ on:
       - "android/**"
       - ".github/workflows/build-apk.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -35,25 +38,52 @@ jobs:
             cp android/app/google-services.json.example android/app/google-services.json
           fi
 
-      - name: Prepare signing key (optional)
+      - name: Prepare signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          S_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          S_ALIAS: ${{ secrets.KEY_ALIAS }}
+          S_KEYPASS: ${{ secrets.KEY_PASSWORD }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=$S_PASS" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=$S_ALIAS" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$S_KEYPASS" >> "$GITHUB_ENV"
+          else
+            echo "::warning::کلید امضای اختصاصی تنظیم نشده؛ یک کلید موقت ساخته می‌شود (برای نصب مستقیم کافی است ولی برای انتشار در مارکت مناسب نیست)."
+            keytool -genkeypair -v -keystore "$RUNNER_TEMP/auto.jks" -alias clnshop \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass clnshop-build -keypass clnshop-build \
+              -dname "CN=Clnshop, O=Clnshop, C=IR"
+            echo "KEYSTORE_PATH=$RUNNER_TEMP/auto.jks" >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=clnshop-build" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=clnshop" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=clnshop-build" >> "$GITHUB_ENV"
           fi
 
       - name: Build release APK
         working-directory: android
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon
 
-      - name: Upload APK
+      - name: Name the APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/*.apk dist/clnshop-app.apk
+          ls -la dist
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: clnshop-app-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: dist/clnshop-app.apk
+
+      - name: Publish APK to a public release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: "آخرین نسخه اپ"
+          body: "آخرین APK ساخته‌شده. فایل clnshop-app.apk را دانلود و نصب کنید."
+          files: dist/clnshop-app.apk
+          make_latest: true
