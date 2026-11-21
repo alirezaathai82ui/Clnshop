@@ -6,6 +6,7 @@ on:
     branches: [main, master]
     paths:
       - "android/**"
+      - "wordpress-plugin/**"
       - ".github/workflows/build-apk.yml"
 
 permissions:
@@ -73,6 +74,11 @@ jobs:
           cp android/app/build/outputs/apk/release/*.apk dist/clnshop-app.apk
           ls -la dist
 
+      - name: Package WordPress plugin
+        run: |
+          cd wordpress-plugin
+          zip -r ../dist/clnshop-app-push.zip clnshop-app-push
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -85,5 +91,7 @@ jobs:
           tag_name: latest-apk
           name: "آخرین نسخه اپ"
           body: "آخرین APK ساخته‌شده. فایل clnshop-app.apk را دانلود و نصب کنید."
-          files: dist/clnshop-app.apk
+          files: |
+            dist/clnshop-app.apk
+            dist/clnshop-app-push.zip
           make_latest: true
