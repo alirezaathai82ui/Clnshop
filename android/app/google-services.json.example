@@ -1,0 +1,17 @@
+{
+  "_comment": "این فایل فقط نمونه است. فایل واقعی را از Firebase Console دانلود کنید و با نام google-services.json در همین پوشه (یا در Secret گیت‌هاب با نام GOOGLE_SERVICES_JSON) قرار دهید.",
+  "project_info": {
+    "project_number": "000000000000",
+    "project_id": "your-project-id"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+        "android_client_info": { "package_name": "ir.clnshop.app" }
+      },
+      "api_key": [{ "current_key": "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" }]
+    }
+  ],
+  "configuration_version": "1"
+}
