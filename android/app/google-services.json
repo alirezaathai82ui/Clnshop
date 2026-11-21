@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "769503268442",
+    "project_id": "clnshop-abc34",
+    "storage_bucket": "clnshop-abc34.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:769503268442:android:8f37b9d263c6051d019263",
+        "android_client_info": {
+          "package_name": "ir.clnshop.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBvfsArY7PxS499fd8xMLleHwOVra6cLZ4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
