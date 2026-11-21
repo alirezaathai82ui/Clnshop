@@ -24,15 +24,16 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Create google-services.json from secret
+      - name: Create google-services.json
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
-            echo "::error::Secret GOOGLE_SERVICES_JSON تنظیم نشده است (فایل google-services.json از Firebase)."
-            exit 1
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+          else
+            echo "::warning::Secret GOOGLE_SERVICES_JSON تنظیم نشده؛ APK با Firebase آزمایشی ساخته می‌شود (نصب می‌شود ولی نوتیفیکیشن کار نمی‌کند)."
+            cp android/app/google-services.json.example android/app/google-services.json
           fi
-          printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
 
       - name: Prepare signing key (optional)
         env:
