@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Clnshop App Push
  * Description: ارسال نوتیفیکیشن (Firebase FCM) به اپ اندروید فروشگاه کلکسیون: وضعیت سفارش، تخفیف، محصول جدید، موجود شدن و سبد رهاشده. با پنل مدیریت.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Clnshop
  * Text Domain: clnshop-app-push
  * Requires PHP: 7.4
@@ -38,7 +38,6 @@ final class Clnshop_App_Push {
 		add_action( 'admin_post_clnapp_send', array( $this, 'handle_send' ) );
 		add_action( 'admin_post_clnapp_save', array( $this, 'handle_save' ) );
 		add_action( 'admin_post_clnapp_test', array( $this, 'handle_test' ) );
-		add_action( 'wp_head', array( $this, 'print_app_bridge' ), 99 );
 
 		// رویدادها.
 		add_action( 'woocommerce_order_status_changed', array( $this, 'on_order_status' ), 10, 4 );
@@ -249,6 +248,20 @@ final class Clnshop_App_Push {
 		return is_string( $token ) && strlen( $token ) >= 20 && strlen( $token ) <= 255 && preg_match( '/^[A-Za-z0-9_\-:\.]+$/', $token );
 	}
 
+	private function is_app_request() {
+		$ua = isset( $_SERVER['HTTP_USER_AGENT'] ) ? wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '';
+		return false !== strpos( $ua, 'ClnShopApp/' );
+	}
+
+	/**
+	 * کاربر واردشده را مستقیم از کوکی ورود می‌خواند (بدون nonce که در صفحه‌های کش‌شده قدیمی می‌شود).
+	 * فقط همراه هدر مخصوص اپ استفاده می‌شود؛ مرورگر در درخواست‌های بین‌سایتی نمی‌تواند آن هدر را بفرستد.
+	 */
+	private function cookie_user_id() {
+		$uid = wp_validate_auth_cookie( '', 'logged_in' );
+		return $uid ? (int) $uid : 0;
+	}
+
 	public function rest_register( WP_REST_Request $req ) {
 		global $wpdb;
 		$token = trim( (string) $req->get_param( 'token' ) );
@@ -256,14 +269,15 @@ final class Clnshop_App_Push {
 			return new WP_REST_Response( array( 'ok' => false ), 400 );
 		}
 		$ver     = substr( sanitize_text_field( (string) $req->get_param( 'app_version' ) ), 0, 30 );
-		$user_id = is_user_logged_in() ? get_current_user_id() : 0;
+		$from_app = ( '1' === (string) $req->get_header( 'X-ClnShop-App' ) ) && $this->is_app_request();
+		$user_id  = $from_app ? $this->cookie_user_id() : 0;
 		$now     = current_time( 'mysql', true );
 		$t       = $this->devices_table();
 
 		$existing = $wpdb->get_row( $wpdb->prepare( "SELECT id, user_id FROM $t WHERE token = %s", $token ) );
 		if ( $existing ) {
-			$new_user = $user_id ? $user_id : (int) $existing->user_id;
-			// اگر کاربر خارج شده باشد درخواست ناشناس است؛ ارتباط قبلی حفظ می‌شود تا خروج صریح.
+			// فقط درخواست خود اپ (با هدر مخصوص) وضعیت ورود را تعیین می‌کند؛ ثبت ناشناس بومی ارتباط قبلی را حفظ می‌کند.
+			$new_user = $from_app ? $user_id : (int) $existing->user_id;
 			$wpdb->update(
 				$t,
 				array(
@@ -297,36 +311,6 @@ final class Clnshop_App_Push {
 			$wpdb->update( $this->devices_table(), array( 'user_id' => 0 ), array( 'token' => $token ) );
 		}
 		return new WP_REST_Response( array( 'ok' => true ), 200 );
-	}
-
-	/**
-	 * وقتی صفحه داخل اپ باز است، توکن دستگاه را به حساب کاربر وارد شده وصل می‌کند.
-	 */
-	public function print_app_bridge() {
-		$ua = isset( $_SERVER['HTTP_USER_AGENT'] ) ? wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '';
-		if ( false === strpos( $ua, 'ClnShopApp/' ) ) {
-			return;
-		}
-		$endpoint = esc_url_raw( rest_url( 'clnshop-app/v1/register' ) );
-		$nonce    = wp_create_nonce( 'wp_rest' );
-		?>
-		<script>
-		(function () {
-			try {
-				if (!window.ClnApp || !window.ClnApp.getToken) { return; }
-				var token = window.ClnApp.getToken();
-				if (!token) { return; }
-				var ver = window.ClnApp.getVersion ? window.ClnApp.getVersion() : '';
-				fetch(<?php echo wp_json_encode( $endpoint ); ?>, {
-					method: 'POST',
-					credentials: 'same-origin',
-					headers: {'Content-Type': 'application/json', 'X-WP-Nonce': <?php echo wp_json_encode( $nonce ); ?>},
-					body: JSON.stringify({token: token, app_version: ver})
-				});
-			} catch (e) {}
-		})();
-		</script>
-		<?php
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -652,8 +636,9 @@ final class Clnshop_App_Push {
 		if ( empty( $s['ev_cart'] ) || ! $this->service_account() ) {
 			return;
 		}
-		$hours = max( 1, (int) $s['cart_delay_hours'] );
-		$limit = time() - $hours * HOUR_IN_SECONDS;
+		$hours  = max( 1, (int) $s['cart_delay_hours'] );
+		$limit  = time() - $hours * HOUR_IN_SECONDS;
+		$oldest = time() - 48 * HOUR_IN_SECONDS;
 
 		$users = get_users(
 			array(
@@ -661,8 +646,8 @@ final class Clnshop_App_Push {
 					'relation' => 'AND',
 					array(
 						'key'     => '_clnapp_cart_ts',
-						'value'   => $limit,
-						'compare' => '<=',
+						'value'   => array( $oldest, $limit ),
+						'compare' => 'BETWEEN',
 						'type'    => 'NUMERIC',
 					),
 					array(
@@ -675,11 +660,12 @@ final class Clnshop_App_Push {
 			)
 		);
 		foreach ( $users as $uid ) {
-			update_user_meta( $uid, '_clnapp_cart_notified', time() );
 			$tokens = $this->tokens_for_users( array( $uid ) );
 			if ( ! $tokens ) {
+				// هنوز دستگاهی به این کاربر وصل نیست؛ علامت نمی‌زنیم تا بعد از اتصال دستگاه (تا ۴۸ ساعت) ارسال شود.
 				continue;
 			}
+			update_user_meta( $uid, '_clnapp_cart_notified', time() );
 			$title = $s['tpl_cart_title'];
 			$body  = $s['tpl_cart_body'];
 			list( $sent, $failed ) = $this->send_to_tokens( $tokens, $title, $body, function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : home_url( '/' ) );

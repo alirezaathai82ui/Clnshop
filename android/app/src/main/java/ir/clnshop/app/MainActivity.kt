@@ -148,6 +148,7 @@ class MainActivity : AppCompatActivity() {
                 progress.visibility = View.GONE
                 swipe.isRefreshing = false
                 CookieManager.getInstance().flush()
+                syncDevice(view, url)
             }
 
             override fun onReceivedError(
@@ -203,6 +204,21 @@ class MainActivity : AppCompatActivity() {
                 openExternal(Uri.parse(url))
             }
         }
+    }
+
+    /**
+     * بعد از هر صفحه، توکن دستگاه را از داخل خود WebView (با کوکی ورود کاربر) به سایت می‌فرستد
+     * تا دستگاه به حساب کاربر وصل شود؛ با خروج از حساب هم ارتباط قطع می‌شود.
+     */
+    private fun syncDevice(view: WebView, url: String?) {
+        val token = Push.currentToken(this)
+        if (token.isBlank()) return
+        val host = try { Uri.parse(url ?: "").host } catch (e: Exception) { null }
+        if (!isInternalHost(host)) return
+        val js = "(function(){try{fetch('/wp-json/clnshop-app/v1/register',{method:'POST'," +
+            "credentials:'same-origin',headers:{'Content-Type':'application/json','X-ClnShop-App':'1'}," +
+            "body:JSON.stringify({token:'" + token + "',app_version:'" + BuildConfig.VERSION_NAME + "'})});}catch(e){}})();"
+        view.evaluateJavascript(js, null)
     }
 
     private fun setupBackNavigation() {
