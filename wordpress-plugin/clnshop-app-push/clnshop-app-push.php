@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Clnshop App Push
  * Description: ارسال نوتیفیکیشن (Firebase FCM) به اپ اندروید فروشگاه کلکسیون: وضعیت سفارش، تخفیف، محصول جدید، موجود شدن و سبد رهاشده. با پنل مدیریت.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: Clnshop
  * Text Domain: clnshop-app-push
  * Requires PHP: 7.4
@@ -279,7 +279,23 @@ final class Clnshop_App_Push {
 	 */
 	public function link_device_from_cookie() {
 		$token = $this->app_cookie_token();
-		if ( '' === $token || ! is_user_logged_in() ) {
+		if ( '' === $token ) {
+			return;
+		}
+		$logged = is_user_logged_in();
+		if ( ! get_transient( 'clnapp_dbg_link' ) ) {
+			set_transient( 'clnapp_dbg_link', 1, 30 );
+			update_option(
+				'clnapp_debug_link',
+				array(
+					'time'      => gmdate( 'c' ),
+					'logged_in' => $logged ? 1 : 0,
+					'uid'       => $logged ? get_current_user_id() : 0,
+				),
+				false
+			);
+		}
+		if ( ! $logged ) {
 			return;
 		}
 		global $wpdb;
@@ -336,6 +352,7 @@ final class Clnshop_App_Push {
 				'time'             => gmdate( 'c' ),
 				'from_app'         => $from_app ? 1 : 0,
 				'uid'              => $user_id,
+				'has_token_cookie' => ! empty( $_COOKIE['clnapp_token'] ) ? 1 : 0,
 				'has_login_cookie' => isset( $_COOKIE[ LOGGED_IN_COOKIE ] ) ? 1 : 0,
 				'ua'               => substr( isset( $_SERVER['HTTP_USER_AGENT'] ) ? wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '', 0, 80 ),
 			),
@@ -841,6 +858,7 @@ final class Clnshop_App_Push {
 		$sa      = $this->service_account();
 		$devices = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $this->devices_table() );
 		$linked  = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $this->devices_table() . ' WHERE user_id > 0' );
+		$active  = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . $this->devices_table() . ' WHERE last_seen >= %s', gmdate( 'Y-m-d H:i:s', time() - 7 * DAY_IN_SECONDS ) ) );
 		$logs    = $wpdb->get_results( 'SELECT * FROM ' . $this->log_table() . ' ORDER BY id DESC LIMIT 30' );
 		$tab     = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'send'; // phpcs:ignore WordPress.Security.NonceVerification
 		$base    = admin_url( 'admin.php?page=clnapp' );
@@ -850,7 +868,7 @@ final class Clnshop_App_Push {
 			<h1>اپ فروشگاه کلکسیون</h1>
 			<?php $this->notice_from_query(); ?>
 			<p>
-				دستگاه‌های ثبت‌شده: <strong><?php echo esc_html( number_format_i18n( $devices ) ); ?></strong> (وصل به حساب کاربر: <strong><?php echo esc_html( number_format_i18n( $linked ) ); ?></strong>)
+				دستگاه‌های فعال (۷ روز اخیر): <strong><?php echo esc_html( number_format_i18n( $active ) ); ?></strong> (کل ثبت‌شده، شامل نصب‌های قدیمی: <?php echo esc_html( number_format_i18n( $devices ) ); ?> | وصل به حساب کاربر: <strong><?php echo esc_html( number_format_i18n( $linked ) ); ?></strong>)
 				&nbsp;|&nbsp;
 				اتصال فایربیس:
 				<?php echo $sa ? '<span style="color:#1a7f37">برقرار (' . esc_html( $sa['project_id'] ) . ')</span>' : '<span style="color:#b32d2e">تنظیم نشده</span>'; ?>
