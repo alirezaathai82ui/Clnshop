@@ -78,6 +78,7 @@ class MainActivity : AppCompatActivity() {
         setupBackNavigation()
         requestNotificationPermission()
         Push.init(this)
+        applyTokenCookie()
 
         val start = resolveInternalUrl(intent?.getStringExtra(EXTRA_URL))
             ?: resolveInternalUrl(intent?.dataString)
@@ -101,6 +102,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         webView.onResume()
+        applyTokenCookie()
     }
 
     override fun onDestroy() {
@@ -148,6 +150,7 @@ class MainActivity : AppCompatActivity() {
                 progress.visibility = View.GONE
                 swipe.isRefreshing = false
                 CookieManager.getInstance().flush()
+                applyTokenCookie()
                 syncDevice(view, url)
             }
 
@@ -219,6 +222,25 @@ class MainActivity : AppCompatActivity() {
             "credentials:'same-origin',headers:{'Content-Type':'application/json','X-ClnShop-App':'1'}," +
             "body:JSON.stringify({token:'" + token + "',app_version:'" + BuildConfig.VERSION_NAME + "'})});}catch(e){}})();"
         view.evaluateJavascript(js, null)
+    }
+
+    /**
+     * توکن دستگاه را در کوکی سایت می‌گذارد. سایت در هر درخواست کاربر واردشده، این کوکی را می‌خواند
+     * و دستگاه را به حساب او وصل می‌کند (با خروج از حساب هم قطع می‌شود).
+     */
+    private fun applyTokenCookie() {
+        val token = Push.currentToken(this)
+        if (token.isBlank()) return
+        try {
+            val cm = CookieManager.getInstance()
+            cm.setCookie(
+                "https://" + BuildConfig.SITE_HOST,
+                "clnapp_token=" + token + "; Max-Age=31536000; Path=/; Domain=" + BuildConfig.SITE_HOST + "; Secure; SameSite=Lax"
+            )
+            cm.flush()
+        } catch (e: Exception) {
+            // بدون کوکی هم اپ کار می‌کند؛ فقط اتصال به حساب انجام نمی‌شود
+        }
     }
 
     private fun setupBackNavigation() {

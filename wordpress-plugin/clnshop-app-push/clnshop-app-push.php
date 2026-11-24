@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Clnshop App Push
  * Description: ارسال نوتیفیکیشن (Firebase FCM) به اپ اندروید فروشگاه کلکسیون: وضعیت سفارش، تخفیف، محصول جدید، موجود شدن و سبد رهاشده. با پنل مدیریت.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: Clnshop
  * Text Domain: clnshop-app-push
  * Requires PHP: 7.4
@@ -38,6 +38,8 @@ final class Clnshop_App_Push {
 		add_action( 'admin_post_clnapp_send', array( $this, 'handle_send' ) );
 		add_action( 'admin_post_clnapp_save', array( $this, 'handle_save' ) );
 		add_action( 'admin_post_clnapp_test', array( $this, 'handle_test' ) );
+		add_action( 'init', array( $this, 'link_device_from_cookie' ), 20 );
+		add_action( 'wp_logout', array( $this, 'on_logout' ) );
 
 		// رویدادها.
 		add_action( 'woocommerce_order_status_changed', array( $this, 'on_order_status' ), 10, 4 );
@@ -66,9 +68,7 @@ final class Clnshop_App_Push {
 
 	public function activate() {
 		$this->create_tables();
-		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
-			wp_schedule_event( time() + 300, 'clnapp_30min', self::CRON_HOOK );
-		}
+		$this->ensure_cron();
 		if ( false === get_option( self::OPT, false ) ) {
 			add_option( self::OPT, $this->default_settings(), '', 'no' );
 		}
@@ -82,9 +82,7 @@ final class Clnshop_App_Push {
 		if ( get_option( 'clnapp_db_version' ) !== self::DB_VERSION ) {
 			$this->create_tables();
 		}
-		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
-			wp_schedule_event( time() + 300, 'clnapp_30min', self::CRON_HOOK );
-		}
+		$this->ensure_cron();
 	}
 
 	private function create_tables() {
@@ -122,7 +120,18 @@ final class Clnshop_App_Push {
 		update_option( 'clnapp_db_version', self::DB_VERSION, false );
 	}
 
+	private function ensure_cron() {
+		if ( 'clnapp_1min' !== wp_get_schedule( self::CRON_HOOK ) ) {
+			wp_clear_scheduled_hook( self::CRON_HOOK );
+			wp_schedule_event( time() + 60, 'clnapp_1min', self::CRON_HOOK );
+		}
+	}
+
 	public function cron_schedules( $schedules ) {
+		$schedules['clnapp_1min'] = array(
+			'interval' => 60,
+			'display'  => 'هر دقیقه',
+		);
 		$schedules['clnapp_30min'] = array(
 			'interval' => 1800,
 			'display'  => 'هر ۳۰ دقیقه',
@@ -142,7 +151,9 @@ final class Clnshop_App_Push {
 			'ev_stock'           => 0,
 			'ev_coupon'          => 1,
 			'ev_cart'            => 1,
-			'cart_delay_hours'   => 2,
+			'cart_delay_value'   => 1,
+			'cart_delay_unit'    => 'hours',
+			'ev_cart_email'      => 1,
 			'order_statuses'     => array(
 				'processing' => array(
 					'on'    => 1,
@@ -183,6 +194,8 @@ final class Clnshop_App_Push {
 			'tpl_coupon_body'    => 'با کد {code} تخفیف بگیرید.',
 			'tpl_cart_title'     => 'سبد خرید شما منتظر است',
 			'tpl_cart_body'      => 'خرید خود را کامل کنید، کالاهای سبد شما ممکن است تمام شوند.',
+			'tpl_cart_email_subject' => 'سبد خرید شما در فروشگاه کلکسیون منتظر است',
+			'tpl_cart_email_body'    => "سلام {name}،\n\nچند کالا در سبد خرید شما جا مانده است: {items}\n\nبرای تکمیل خرید اینجا را بزنید:\n{cart_url}\n\nفروشگاه کلکسیون",
 		);
 	}
 
@@ -193,6 +206,10 @@ final class Clnshop_App_Push {
 		}
 		$def = $this->default_settings();
 		$out = array_merge( $def, $saved );
+		if ( ! isset( $saved['cart_delay_value'] ) && isset( $saved['cart_delay_hours'] ) ) {
+			$out['cart_delay_value'] = max( 1, (int) $saved['cart_delay_hours'] );
+			$out['cart_delay_unit']  = 'hours';
+		}
 		// ادغام عمیق وضعیت‌های سفارش.
 		$out['order_statuses'] = array_merge(
 			$def['order_statuses'],
@@ -248,6 +265,48 @@ final class Clnshop_App_Push {
 		return is_string( $token ) && strlen( $token ) >= 20 && strlen( $token ) <= 255 && preg_match( '/^[A-Za-z0-9_\-:\.]+$/', $token );
 	}
 
+	private function app_cookie_token() {
+		if ( empty( $_COOKIE['clnapp_token'] ) ) {
+			return '';
+		}
+		$t = sanitize_text_field( wp_unslash( $_COOKIE['clnapp_token'] ) );
+		return $this->valid_token( $t ) ? $t : '';
+	}
+
+	/**
+	 * اپ توکن دستگاه را در کوکی clnapp_token می‌گذارد. در هر درخواست کاربر واردشده،
+	 * دستگاه (که قبلاً ثبت شده) به همان کاربر وصل می‌شود. به کش صفحه و nonce وابسته نیست.
+	 */
+	public function link_device_from_cookie() {
+		$token = $this->app_cookie_token();
+		if ( '' === $token || ! is_user_logged_in() ) {
+			return;
+		}
+		global $wpdb;
+		$uid = get_current_user_id();
+		$t   = $this->devices_table();
+		$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, user_id FROM $t WHERE token = %s", $token ) );
+		if ( $row && (int) $row->user_id !== $uid ) {
+			$wpdb->update(
+				$t,
+				array(
+					'user_id'   => $uid,
+					'last_seen' => current_time( 'mysql', true ),
+				),
+				array( 'id' => $row->id )
+			);
+		}
+	}
+
+	public function on_logout( $user_id = 0 ) {
+		$token = $this->app_cookie_token();
+		if ( '' === $token ) {
+			return;
+		}
+		global $wpdb;
+		$wpdb->update( $this->devices_table(), array( 'user_id' => 0 ), array( 'token' => $token ) );
+	}
+
 	private function is_app_request() {
 		$ua = isset( $_SERVER['HTTP_USER_AGENT'] ) ? wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '';
 		return false !== strpos( $ua, 'ClnShopApp/' );
@@ -271,13 +330,24 @@ final class Clnshop_App_Push {
 		$ver     = substr( sanitize_text_field( (string) $req->get_param( 'app_version' ) ), 0, 30 );
 		$from_app = ( '1' === (string) $req->get_header( 'X-ClnShop-App' ) ) && $this->is_app_request();
 		$user_id  = $from_app ? $this->cookie_user_id() : 0;
+		update_option(
+			'clnapp_debug',
+			array(
+				'time'             => gmdate( 'c' ),
+				'from_app'         => $from_app ? 1 : 0,
+				'uid'              => $user_id,
+				'has_login_cookie' => isset( $_COOKIE[ LOGGED_IN_COOKIE ] ) ? 1 : 0,
+				'ua'               => substr( isset( $_SERVER['HTTP_USER_AGENT'] ) ? wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '', 0, 80 ),
+			),
+			false
+		);
 		$now     = current_time( 'mysql', true );
 		$t       = $this->devices_table();
 
 		$existing = $wpdb->get_row( $wpdb->prepare( "SELECT id, user_id FROM $t WHERE token = %s", $token ) );
 		if ( $existing ) {
-			// فقط درخواست خود اپ (با هدر مخصوص) وضعیت ورود را تعیین می‌کند؛ ثبت ناشناس بومی ارتباط قبلی را حفظ می‌کند.
-			$new_user = $from_app ? $user_id : (int) $existing->user_id;
+			// این مسیر فقط ارتباط را برقرار می‌کند؛ قطع ارتباط فقط با خروج از حساب (wp_logout) انجام می‌شود.
+			$new_user = $user_id ? $user_id : (int) $existing->user_id;
 			$wpdb->update(
 				$t,
 				array(
@@ -631,14 +701,49 @@ final class Clnshop_App_Push {
 		}
 	}
 
+	private function cart_delay_seconds( $s ) {
+		$v = max( 1, (int) $s['cart_delay_value'] );
+		return 'minutes' === $s['cart_delay_unit'] ? $v * MINUTE_IN_SECONDS : $v * HOUR_IN_SECONDS;
+	}
+
+	private function cart_items_text( $uid ) {
+		$cart  = get_user_meta( $uid, '_woocommerce_persistent_cart_' . get_current_blog_id(), true );
+		$names = array();
+		if ( is_array( $cart ) && ! empty( $cart['cart'] ) && is_array( $cart['cart'] ) ) {
+			foreach ( $cart['cart'] as $item ) {
+				$pid = isset( $item['product_id'] ) ? (int) $item['product_id'] : 0;
+				if ( $pid ) {
+					$names[] = get_the_title( $pid );
+				}
+			}
+		}
+		$names = array_slice( array_unique( array_filter( $names ) ), 0, 5 );
+		return implode( '، ', $names );
+	}
+
+	private function user_email_for( $uid ) {
+		$cands = array( get_user_meta( $uid, 'billing_email', true ) );
+		$u     = get_userdata( $uid );
+		if ( $u ) {
+			array_unshift( $cands, $u->user_email );
+		}
+		foreach ( $cands as $e ) {
+			$e = trim( (string) $e );
+			if ( is_email( $e ) ) {
+				return $e;
+			}
+		}
+		return '';
+	}
+
 	public function check_abandoned_carts() {
 		$s = $this->settings();
-		if ( empty( $s['ev_cart'] ) || ! $this->service_account() ) {
+		if ( empty( $s['ev_cart'] ) ) {
 			return;
 		}
-		$hours  = max( 1, (int) $s['cart_delay_hours'] );
-		$limit  = time() - $hours * HOUR_IN_SECONDS;
-		$oldest = time() - 48 * HOUR_IN_SECONDS;
+		$push_ok = (bool) $this->service_account();
+		$limit   = time() - $this->cart_delay_seconds( $s );
+		$oldest  = time() - 48 * HOUR_IN_SECONDS;
 
 		$users = get_users(
 			array(
@@ -660,16 +765,31 @@ final class Clnshop_App_Push {
 			)
 		);
 		foreach ( $users as $uid ) {
-			$tokens = $this->tokens_for_users( array( $uid ) );
-			if ( ! $tokens ) {
-				// هنوز دستگاهی به این کاربر وصل نیست؛ علامت نمی‌زنیم تا بعد از اتصال دستگاه (تا ۴۸ ساعت) ارسال شود.
+			$tokens = $push_ok ? $this->tokens_for_users( array( $uid ) ) : array();
+			$email  = ! empty( $s['ev_cart_email'] ) ? $this->user_email_for( $uid ) : '';
+			if ( ! $tokens && '' === $email ) {
+				// هنوز راه ارتباطی نیست؛ علامت نمی‌زنیم تا بعداً (تا ۴۸ ساعت) دوباره بررسی شود.
 				continue;
 			}
 			update_user_meta( $uid, '_clnapp_cart_notified', time() );
-			$title = $s['tpl_cart_title'];
-			$body  = $s['tpl_cart_body'];
-			list( $sent, $failed ) = $this->send_to_tokens( $tokens, $title, $body, function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : home_url( '/' ) );
-			$this->log( 'cart', 'کاربر ' . $uid, $title, $body, $sent, $failed );
+			$user = get_userdata( $uid );
+			$vars = array(
+				'name'     => $user ? $user->display_name : '',
+				'items'    => $this->cart_items_text( $uid ),
+				'cart_url' => function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : home_url( '/' ),
+			);
+			if ( $tokens ) {
+				$title = $this->fill( $s['tpl_cart_title'], $vars );
+				$body  = $this->fill( $s['tpl_cart_body'], $vars );
+				list( $sent, $failed ) = $this->send_to_tokens( $tokens, $title, $body, $vars['cart_url'] );
+				$this->log( 'cart', 'کاربر ' . $uid, $title, $body, $sent, $failed );
+			}
+			if ( '' !== $email ) {
+				$subject = $this->fill( $s['tpl_cart_email_subject'], $vars );
+				$message = $this->fill( $s['tpl_cart_email_body'], $vars );
+				$ok      = wp_mail( $email, $subject, $message );
+				$this->log( 'cart_email', 'کاربر ' . $uid, $subject, $message, $ok ? 1 : 0, $ok ? 0 : 1 );
+			}
 		}
 	}
 
@@ -720,6 +840,7 @@ final class Clnshop_App_Push {
 		$s       = $this->settings();
 		$sa      = $this->service_account();
 		$devices = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $this->devices_table() );
+		$linked  = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $this->devices_table() . ' WHERE user_id > 0' );
 		$logs    = $wpdb->get_results( 'SELECT * FROM ' . $this->log_table() . ' ORDER BY id DESC LIMIT 30' );
 		$tab     = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'send'; // phpcs:ignore WordPress.Security.NonceVerification
 		$base    = admin_url( 'admin.php?page=clnapp' );
@@ -729,7 +850,7 @@ final class Clnshop_App_Push {
 			<h1>اپ فروشگاه کلکسیون</h1>
 			<?php $this->notice_from_query(); ?>
 			<p>
-				دستگاه‌های ثبت‌شده: <strong><?php echo esc_html( number_format_i18n( $devices ) ); ?></strong>
+				دستگاه‌های ثبت‌شده: <strong><?php echo esc_html( number_format_i18n( $devices ) ); ?></strong> (وصل به حساب کاربر: <strong><?php echo esc_html( number_format_i18n( $linked ) ); ?></strong>)
 				&nbsp;|&nbsp;
 				اتصال فایربیس:
 				<?php echo $sa ? '<span style="color:#1a7f37">برقرار (' . esc_html( $sa['project_id'] ) . ')</span>' : '<span style="color:#b32d2e">تنظیم نشده</span>'; ?>
@@ -803,8 +924,17 @@ final class Clnshop_App_Push {
 					عنوان: <input type="text" name="tpl_coupon_title" value="<?php echo esc_attr( $s['tpl_coupon_title'] ); ?>" class="regular-text"> متن: <input type="text" name="tpl_coupon_body" value="<?php echo esc_attr( $s['tpl_coupon_body'] ); ?>" class="regular-text"><br><span class="description">{code}</span></p>
 
 					<p><label><input type="checkbox" name="ev_cart" value="1" <?php checked( $s['ev_cart'] ); ?>> یادآوری سبد خرید رهاشده</label>
-					بعد از <input type="number" min="1" max="72" name="cart_delay_hours" value="<?php echo esc_attr( (int) $s['cart_delay_hours'] ); ?>" style="width:70px"> ساعت<br>
-					عنوان: <input type="text" name="tpl_cart_title" value="<?php echo esc_attr( $s['tpl_cart_title'] ); ?>" class="regular-text"> متن: <input type="text" name="tpl_cart_body" value="<?php echo esc_attr( $s['tpl_cart_body'] ); ?>" class="regular-text"></p>
+					بعد از <input type="number" min="1" max="4320" name="cart_delay_value" value="<?php echo esc_attr( (int) $s['cart_delay_value'] ); ?>" style="width:80px">
+					<select name="cart_delay_unit">
+						<option value="minutes" <?php selected( $s['cart_delay_unit'], 'minutes' ); ?>>دقیقه</option>
+						<option value="hours" <?php selected( $s['cart_delay_unit'], 'hours' ); ?>>ساعت</option>
+					</select><br>
+					عنوان: <input type="text" name="tpl_cart_title" value="<?php echo esc_attr( $s['tpl_cart_title'] ); ?>" class="regular-text"> متن: <input type="text" name="tpl_cart_body" value="<?php echo esc_attr( $s['tpl_cart_body'] ); ?>" class="regular-text"><br>
+					<span class="description">متغیرها: {name} {items} {cart_url} — حداکثر ۷۲ ساعت یا ۴۳۲۰ دقیقه</span></p>
+
+					<p><label><input type="checkbox" name="ev_cart_email" value="1" <?php checked( $s['ev_cart_email'] ); ?>> ارسال ایمیل یادآوری سبد خرید (فقط به کاربرانی که ایمیل معتبر دارند)</label><br>
+					موضوع: <input type="text" name="tpl_cart_email_subject" value="<?php echo esc_attr( $s['tpl_cart_email_subject'] ); ?>" class="large-text"><br>
+					متن:<br><textarea name="tpl_cart_email_body" rows="6" class="large-text"><?php echo esc_textarea( $s['tpl_cart_email_body'] ); ?></textarea></p>
 
 					<?php submit_button( 'ذخیره تنظیمات' ); ?>
 				</form>
@@ -842,10 +972,15 @@ final class Clnshop_App_Push {
 		$cur = $this->settings();
 		$new = $cur;
 
-		foreach ( array( 'ev_order', 'ev_product', 'ev_stock', 'ev_coupon', 'ev_cart' ) as $k ) {
+		foreach ( array( 'ev_order', 'ev_product', 'ev_stock', 'ev_coupon', 'ev_cart', 'ev_cart_email' ) as $k ) {
 			$new[ $k ] = empty( $_POST[ $k ] ) ? 0 : 1;
 		}
-		$new['cart_delay_hours'] = isset( $_POST['cart_delay_hours'] ) ? min( 72, max( 1, (int) $_POST['cart_delay_hours'] ) ) : 2;
+		$unit = ( isset( $_POST['cart_delay_unit'] ) && 'minutes' === $_POST['cart_delay_unit'] ) ? 'minutes' : 'hours';
+		$val  = isset( $_POST['cart_delay_value'] ) ? max( 1, (int) $_POST['cart_delay_value'] ) : 1;
+		$val  = 'minutes' === $unit ? min( 4320, $val ) : min( 72, $val );
+		$new['cart_delay_value'] = $val;
+		$new['cart_delay_unit']  = $unit;
+		unset( $new['cart_delay_hours'] );
 		$new['topic_all']        = isset( $_POST['topic_all'] ) ? preg_replace( '/[^a-zA-Z0-9\-_.~%]/', '', wp_unslash( $_POST['topic_all'] ) ) : 'all';
 		if ( '' === $new['topic_all'] ) {
 			$new['topic_all'] = 'all';
@@ -854,6 +989,12 @@ final class Clnshop_App_Push {
 			if ( isset( $_POST[ $k ] ) ) {
 				$new[ $k ] = sanitize_text_field( wp_unslash( $_POST[ $k ] ) );
 			}
+		}
+		if ( isset( $_POST['tpl_cart_email_subject'] ) ) {
+			$new['tpl_cart_email_subject'] = sanitize_text_field( wp_unslash( $_POST['tpl_cart_email_subject'] ) );
+		}
+		if ( isset( $_POST['tpl_cart_email_body'] ) ) {
+			$new['tpl_cart_email_body'] = sanitize_textarea_field( wp_unslash( $_POST['tpl_cart_email_body'] ) );
 		}
 		$os = isset( $_POST['os'] ) && is_array( $_POST['os'] ) ? wp_unslash( $_POST['os'] ) : array();
 		foreach ( array_keys( $this->order_status_labels() ) as $key ) {
